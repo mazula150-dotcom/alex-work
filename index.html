@@ -3562,7 +3562,7 @@ function downloadXlsx(bytes, filename) {
     const res = await cloudFetch('/resources/download?path=' + encodeURIComponent(CLOUD_FILE));
     if (!res.ok) throw new Error('Не удалось получить файл с Диска: ' + (await cloudErrorText(res)));
     const data = await res.json();
-    const file = await fetch(data.href);
+    const file = await fetch(data.href, { referrerPolicy: 'no-referrer' });
     if (!file.ok) throw new Error('Не удалось скачать файл с Диска');
     return file.json();
   }
@@ -3589,6 +3589,7 @@ function downloadXlsx(bytes, filename) {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload, null, 2),
+      referrerPolicy: 'no-referrer',
     });
     if (!put.ok) throw new Error('Не удалось загрузить файл на Диск (HTTP ' + put.status + ')');
   }
