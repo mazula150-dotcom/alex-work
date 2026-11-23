@@ -1709,6 +1709,7 @@ function downloadXlsx(bytes, filename) {
       '<div class="page-head">' +
       '<div class="page-title"><h2>Номенклатура</h2><p>Наименование, закупочная цена и количество на складе</p></div>' +
       '<div class="head-actions">' +
+      '<button class="btn" data-act="import-items" title="Импорт номенклатуры из Excel или CSV">' + icon('upload') + '<span>Импорт</span></button>' +
       '<button class="btn" data-act="export-items" title="Экспорт номенклатуры в Excel">' + icon('download') + '<span>В Excel</span></button>' +
       '<button class="btn primary" data-act="add-item">' + icon('plus') + '<span>Добавить позицию</span></button>' +
       '</div></div>' +
@@ -1742,6 +1743,7 @@ function downloadXlsx(bytes, filename) {
       else if (act === 'edit-item') openItemModal(btn.dataset.id);
       else if (act === 'del-item') removeItem(btn.dataset.id);
       else if (act === 'export-items') exportItems();
+      else if (act === 'import-items') openImportModal();
       else if (act === 'seed-demo') seedDemo();
     });
 
@@ -1772,6 +1774,7 @@ function downloadXlsx(bytes, filename) {
           '<div class="empty-title">База пока пуста</div>' +
           '<div class="empty-text">Добавьте позицию вручную. Прайс-лист загружается в разделе «Каталог».</div>' +
           '<div class="head-actions"><button class="btn primary" data-act="add-item">' + icon('plus') + '<span>Добавить позицию</span></button>' +
+          '<button class="btn" data-act="import-items">Импорт из Excel</button>' +
           '<button class="btn" data-act="seed-demo">Загрузить пример</button></div></div>';
     } else {
       emptyEl.innerHTML = '';
