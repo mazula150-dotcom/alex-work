@@ -1585,7 +1585,10 @@ function downloadXlsx(bytes, filename) {
       '<label class="field"><span>Артикул</span><input name="sku" maxlength="60" autocomplete="off" value="' + esc(item ? item.sku : '') + '"></label>' +
       '<label class="field"><span>Ед. изм.</span><input name="unit" list="units" maxlength="12" autocomplete="off" value="' + esc(item ? item.unit : 'шт') + '"></label>' +
       '</div>' +
+      '<div class="form-row">' +
       '<label class="field"><span>Цена закупки, \u20bd <em>*</em></span><input name="price" inputmode="decimal" autocomplete="off" placeholder="0,00" value="' + (item ? fmtNumInput(item.price) : '') + '"></label>' +
+      '<label class="field"><span>Количество</span><input name="qty" inputmode="decimal" autocomplete="off" value="' + (item ? fmtNumInput(item.qty) : '0') + '"></label>' +
+      '</div>' +
       '<div class="hint" id="sale-hint"></div>' +
       '<div class="modal-actions">' +
       '<button type="button" class="btn" data-close>Отмена</button>' +
@@ -1624,7 +1627,7 @@ function downloadXlsx(bytes, filename) {
               sku: form.elements.sku.value.trim(),
               unit: form.elements.unit.value.trim() || 'шт',
               price: round2(toNum(priceInput.value)),
-              qty: item ? round3(toNum(item.qty)) : 0,
+              qty: round3(toNum(form.elements.qty.value)),
             };
             if (item) Object.assign(item, data);
             else state.items.push(Object.assign({ id: uid() }, data));
@@ -1704,7 +1707,7 @@ function downloadXlsx(bytes, filename) {
     view.innerHTML =
       '<div class="tab-page">' +
       '<div class="page-head">' +
-      '<div class="page-title"><h2>Номенклатура</h2><p>Наименование, артикул и закупочная цена</p></div>' +
+      '<div class="page-title"><h2>Номенклатура</h2><p>Наименование, закупочная цена и количество на складе</p></div>' +
       '<div class="head-actions">' +
       '<button class="btn" data-act="export-items" title="Экспорт номенклатуры в Excel">' + icon('download') + '<span>В Excel</span></button>' +
       '<button class="btn primary" data-act="add-item">' + icon('plus') + '<span>Добавить позицию</span></button>' +
@@ -1713,12 +1716,13 @@ function downloadXlsx(bytes, filename) {
       '<section class="card">' +
       '<div class="card-head">' +
       '<div class="search">' + icon('search') + '<input id="items-search" type="search" placeholder="Поиск по наименованию или артикулу" value="' + esc(ui.itemSearch) + '"></div>' +
-      '<div class="card-head-meta"><span class="muted" id="items-found"></span></div>' +
+      '<div class="card-head-meta">' + stockLegend() + '<span class="muted" id="items-found"></span></div>' +
       '</div>' +
       '<div class="table-wrap"><table class="data-table items-table">' +
       '<thead><tr>' +
       '<th>Наименование</th><th>Артикул</th><th class="c">Ед.</th>' +
-      '<th class="r">Цена, \u20bd</th><th class="r">Цена с наценкой</th><th class="actions-col"></th>' +
+      '<th class="r">Цена, \u20bd</th><th class="r">Кол-во</th><th class="r">Сумма, \u20bd</th>' +
+      '<th class="r">С наценкой</th><th class="actions-col"></th>' +
       '</tr></thead><tbody id="items-body"></tbody></table></div>' +
       '<div id="items-empty"></div>' +
       '</section></div>';
@@ -1772,13 +1776,17 @@ function downloadXlsx(bytes, filename) {
     } else {
       emptyEl.innerHTML = '';
       body.innerHTML = list.map(function (it) {
-        const sale = it.price * (1 + markup / 100);
-        return '<tr>' +
+        const sum = it.price * it.qty;
+        const sumSale = it.price * (1 + markup / 100) * it.qty;
+        const rowClass = qtyRowClass(it.qty);
+        return '<tr' + (rowClass ? ' class="' + rowClass + '"' : '') + '>' +
           '<td><div class="cell-name">' + esc(it.name) + '</div></td>' +
           '<td class="muted">' + (it.sku ? esc(it.sku) : '<span class="cell-empty">—</span>') + '</td>' +
           '<td class="c">' + esc(it.unit) + '</td>' +
           '<td class="r">' + fmtMoney(it.price) + '</td>' +
-          '<td class="r">' + fmtMoney(sale) + '</td>' +
+          '<td class="r">' + qtyCell(it.qty) + '</td>' +
+          '<td class="r">' + fmtMoney(sum) + '</td>' +
+          '<td class="r">' + fmtMoney(sumSale) + '</td>' +
           '<td class="r"><div class="row-actions">' +
           '<button class="icon-btn" data-act="edit-item" data-id="' + it.id + '" title="Изменить">' + icon('pencil') + '</button>' +
           '<button class="icon-btn danger" data-act="del-item" data-id="' + it.id + '" title="Удалить">' + icon('trash') + '</button>' +
@@ -1787,12 +1795,12 @@ function downloadXlsx(bytes, filename) {
       foundEl.textContent = query ? 'Найдено: ' + list.length + ' из ' + all.length : 'Всего: ' + all.length;
     }
 
-    const prices = all.map(function (it) { return toNum(it.price); });
-    const avg = prices.length ? prices.reduce(function (s, p) { return s + p; }, 0) / prices.length : 0;
+    const t = totals(all);
     $('#items-kpis').innerHTML = kpiCards([
       { label: 'Позиций в базе', value: all.length, sub: 'наименований' },
-      { label: 'Средняя цена', value: money(avg), sub: 'по закупочным ценам' },
-      { label: 'Средняя с наценкой ' + fmtPct(markup) + '%', value: money(avg * (1 + markup / 100)), sub: 'средняя цена продажи' },
+      { label: 'Остаток на складе', value: fmtQty(t.qty), sub: 'единиц' },
+      { label: 'Себестоимость остатка', value: money(t.cost), sub: 'по закупочным ценам' },
+      { label: 'С наценкой ' + fmtPct(markup) + '%', value: money(t.sale), sub: 'потенциальная выручка' },
     ]);
   }
 
@@ -1840,7 +1848,7 @@ function downloadXlsx(bytes, filename) {
       '<span class="muted" id="catalog-found"></span>' +
       '</div>' +
       '<div class="table-wrap"><table class="data-table catalog-table">' +
-      '<thead><tr><th>Наименование</th><th>Артикул</th><th class="r">Цена, \u20bd</th><th>На складе</th><th class="actions-col"></th></tr></thead>' +
+      '<thead><tr><th>Наименование</th><th>Артикул</th><th class="r">Цена, \u20bd</th><th class="actions-col"></th></tr></thead>' +
       '<tbody id="catalog-body"></tbody></table></div>' +
       '<div id="catalog-empty"></div>' +
       '</section></div>';
@@ -1899,7 +1907,6 @@ function downloadXlsx(bytes, filename) {
           '<td><div class="cell-name">' + esc(c.name) + '</div></td>' +
           '<td class="muted">' + (c.sku ? esc(c.sku) : '<span class="cell-empty">—</span>') + '</td>' +
           '<td class="r">' + fmtMoney(c.price) + '</td>' +
-          '<td>' + catalogStatus(c) + '</td>' +
           '<td class="r"><div class="catalog-actions">' +
           '<button class="btn small accent" data-act="catalog-to-stock" data-id="' + c.id + '">На склад</button>' +
           '<button class="icon-btn" data-act="edit-catalog" data-id="' + c.id + '" title="Изменить">' + icon('pencil') + '</button>' +
@@ -2653,10 +2660,10 @@ function downloadXlsx(bytes, filename) {
     const r1 = addRow([{ v: 'Номенклатурная база', s: S.title }], 26);
     const r2 = addRow([{ v: 'Сформировано: ' + nowRu() + ' · наценка ' + fmtPct(markup) + '%', s: S.subtitle }], 18);
     addRow([]);
-    addRow(['№', 'Наименование', 'Артикул', 'Ед.', 'Цена закупки', 'Цена с наценкой'].map(function (h) {
+    addRow(['№', 'Наименование', 'Артикул', 'Ед.', 'Цена закупки', 'Количество', 'Сумма закупки', 'Цена с наценкой', 'Сумма с наценкой'].map(function (h) {
       return { v: h, s: S.header };
     }), 30);
-    merges.push('A' + r1 + ':F' + r1, 'A' + r2 + ':F' + r2);
+    merges.push('A' + r1 + ':I' + r1, 'A' + r2 + ':I' + r2);
 
     state.items.forEach(function (it, i) {
       addRow([
@@ -2665,17 +2672,25 @@ function downloadXlsx(bytes, filename) {
         { v: it.sku, s: S.text },
         { v: it.unit, s: S.center },
         { v: round2(it.price), s: S.money },
+        { v: round3(it.qty), s: S.qty },
+        { v: round2(it.price * it.qty), s: S.money },
         { v: round2(it.price * (1 + markup / 100)), s: S.money },
+        { v: round2(it.price * (1 + markup / 100) * it.qty), s: S.money },
       ]);
     });
 
+    const t = totals(state.items);
     addRow([]);
-    addRow([{ v: 'Всего позиций: ' + state.items.length, s: S.totalLabel }], 22);
+    addRow([
+      { v: 'Итого', s: S.totalLabel }, { v: '', s: S.totalLabel }, { v: '', s: S.totalLabel },
+      { v: '', s: S.totalLabel }, { v: '', s: S.totalLabel },
+      { v: t.qty, s: S.totalQty }, { v: t.cost, s: S.totalMoney }, { v: '', s: S.totalLabel }, { v: t.sale, s: S.totalMoney },
+    ], 22);
 
     const bytes = XLSX.build({
       sheets: [{
         name: 'Номенклатура',
-        cols: [5, 44, 16, 8, 14, 16],
+        cols: [5, 44, 16, 8, 14, 12, 16, 16, 17],
         rows: rows,
         heights: heights,
         merges: merges,
