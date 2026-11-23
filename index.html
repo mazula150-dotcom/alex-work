@@ -1206,6 +1206,7 @@ function downloadXlsx(bytes, filename) {
   const CLOUD_TOKEN = 'https://oauth.yandex.com/token';
   const CLOUD_API = 'https://cloud-api.yandex.net/v1/disk';
   const SYNC_INTERVAL = 24 * 60 * 60 * 1000;
+  const CLOUD_POLL_INTERVAL = 15 * 1000;
 
   /* ------------------------------ utils ------------------------------ */
 
@@ -1299,6 +1300,9 @@ function downloadXlsx(bytes, filename) {
   let state = null;
   let cloud = null;
   let cloudBusy = false;
+  let appReady = false;
+  let autoSyncTimer = 0;
+  let lastPollAt = 0;
 
   const ui = {
     tab: 'items',
@@ -1418,8 +1422,10 @@ function downloadXlsx(bytes, filename) {
     }
     if (!skipCloudTouch && cloud) {
       cloud.localUpdatedAt = new Date().toISOString();
+      cloud.localDirty = true;
       saveCloud();
       updateCloudBadge();
+      scheduleAutoSync();
     }
   }
 
@@ -1579,10 +1585,7 @@ function downloadXlsx(bytes, filename) {
       '<label class="field"><span>Артикул</span><input name="sku" maxlength="60" autocomplete="off" value="' + esc(item ? item.sku : '') + '"></label>' +
       '<label class="field"><span>Ед. изм.</span><input name="unit" list="units" maxlength="12" autocomplete="off" value="' + esc(item ? item.unit : 'шт') + '"></label>' +
       '</div>' +
-      '<div class="form-row">' +
       '<label class="field"><span>Цена закупки, \u20bd <em>*</em></span><input name="price" inputmode="decimal" autocomplete="off" placeholder="0,00" value="' + (item ? fmtNumInput(item.price) : '') + '"></label>' +
-      '<label class="field"><span>Количество</span><input name="qty" inputmode="decimal" autocomplete="off" value="' + (item ? fmtNumInput(item.qty) : '0') + '"></label>' +
-      '</div>' +
       '<div class="hint" id="sale-hint"></div>' +
       '<div class="modal-actions">' +
       '<button type="button" class="btn" data-close>Отмена</button>' +
@@ -1621,7 +1624,7 @@ function downloadXlsx(bytes, filename) {
               sku: form.elements.sku.value.trim(),
               unit: form.elements.unit.value.trim() || 'шт',
               price: round2(toNum(priceInput.value)),
-              qty: round3(toNum(form.elements.qty.value)),
+              qty: item ? round3(toNum(item.qty)) : 0,
             };
             if (item) Object.assign(item, data);
             else state.items.push(Object.assign({ id: uid() }, data));
@@ -1701,9 +1704,8 @@ function downloadXlsx(bytes, filename) {
     view.innerHTML =
       '<div class="tab-page">' +
       '<div class="page-head">' +
-      '<div class="page-title"><h2>Номенклатура</h2><p>Наименование, закупочная цена и количество на складе</p></div>' +
+      '<div class="page-title"><h2>Номенклатура</h2><p>Наименование, артикул и закупочная цена</p></div>' +
       '<div class="head-actions">' +
-      '<button class="btn" data-act="import-items" title="Импорт номенклатуры из Excel или CSV">' + icon('upload') + '<span>Импорт</span></button>' +
       '<button class="btn" data-act="export-items" title="Экспорт номенклатуры в Excel">' + icon('download') + '<span>В Excel</span></button>' +
       '<button class="btn primary" data-act="add-item">' + icon('plus') + '<span>Добавить позицию</span></button>' +
       '</div></div>' +
@@ -1711,13 +1713,12 @@ function downloadXlsx(bytes, filename) {
       '<section class="card">' +
       '<div class="card-head">' +
       '<div class="search">' + icon('search') + '<input id="items-search" type="search" placeholder="Поиск по наименованию или артикулу" value="' + esc(ui.itemSearch) + '"></div>' +
-      '<div class="card-head-meta">' + stockLegend() + '<span class="muted" id="items-found"></span></div>' +
+      '<div class="card-head-meta"><span class="muted" id="items-found"></span></div>' +
       '</div>' +
       '<div class="table-wrap"><table class="data-table items-table">' +
       '<thead><tr>' +
       '<th>Наименование</th><th>Артикул</th><th class="c">Ед.</th>' +
-      '<th class="r">Цена, \u20bd</th><th class="r">Кол-во</th><th class="r">Сумма, \u20bd</th>' +
-      '<th class="r">С наценкой</th><th class="actions-col"></th>' +
+      '<th class="r">Цена, \u20bd</th><th class="r">Цена с наценкой</th><th class="actions-col"></th>' +
       '</tr></thead><tbody id="items-body"></tbody></table></div>' +
       '<div id="items-empty"></div>' +
       '</section></div>';
@@ -1737,7 +1738,6 @@ function downloadXlsx(bytes, filename) {
       else if (act === 'edit-item') openItemModal(btn.dataset.id);
       else if (act === 'del-item') removeItem(btn.dataset.id);
       else if (act === 'export-items') exportItems();
-      else if (act === 'import-items') openImportModal();
       else if (act === 'seed-demo') seedDemo();
     });
 
@@ -1766,24 +1766,19 @@ function downloadXlsx(bytes, filename) {
           '<div class="empty-text">Попробуйте изменить запрос или очистить поиск.</div></div>'
         : '<div class="empty"><div class="empty-icon">' + icon('box', 28) + '</div>' +
           '<div class="empty-title">База пока пуста</div>' +
-          '<div class="empty-text">Добавьте первую позицию или загрузите пример, чтобы посмотреть, как работает учёт.</div>' +
+          '<div class="empty-text">Добавьте позицию вручную. Прайс-лист загружается в разделе «Каталог».</div>' +
           '<div class="head-actions"><button class="btn primary" data-act="add-item">' + icon('plus') + '<span>Добавить позицию</span></button>' +
-          '<button class="btn" data-act="import-items">Импорт из Excel</button>' +
           '<button class="btn" data-act="seed-demo">Загрузить пример</button></div></div>';
     } else {
       emptyEl.innerHTML = '';
       body.innerHTML = list.map(function (it) {
-        const sum = it.price * it.qty;
-        const sumSale = it.price * (1 + markup / 100) * it.qty;
-        const rowClass = qtyRowClass(it.qty);
-        return '<tr' + (rowClass ? ' class="' + rowClass + '"' : '') + '>' +
+        const sale = it.price * (1 + markup / 100);
+        return '<tr>' +
           '<td><div class="cell-name">' + esc(it.name) + '</div></td>' +
           '<td class="muted">' + (it.sku ? esc(it.sku) : '<span class="cell-empty">—</span>') + '</td>' +
           '<td class="c">' + esc(it.unit) + '</td>' +
           '<td class="r">' + fmtMoney(it.price) + '</td>' +
-          '<td class="r">' + qtyCell(it.qty) + '</td>' +
-          '<td class="r">' + fmtMoney(sum) + '</td>' +
-          '<td class="r">' + fmtMoney(sumSale) + '</td>' +
+          '<td class="r">' + fmtMoney(sale) + '</td>' +
           '<td class="r"><div class="row-actions">' +
           '<button class="icon-btn" data-act="edit-item" data-id="' + it.id + '" title="Изменить">' + icon('pencil') + '</button>' +
           '<button class="icon-btn danger" data-act="del-item" data-id="' + it.id + '" title="Удалить">' + icon('trash') + '</button>' +
@@ -1792,12 +1787,12 @@ function downloadXlsx(bytes, filename) {
       foundEl.textContent = query ? 'Найдено: ' + list.length + ' из ' + all.length : 'Всего: ' + all.length;
     }
 
-    const t = totals(all);
+    const prices = all.map(function (it) { return toNum(it.price); });
+    const avg = prices.length ? prices.reduce(function (s, p) { return s + p; }, 0) / prices.length : 0;
     $('#items-kpis').innerHTML = kpiCards([
       { label: 'Позиций в базе', value: all.length, sub: 'наименований' },
-      { label: 'Остаток на складе', value: fmtQty(t.qty), sub: 'единиц' },
-      { label: 'Себестоимость остатка', value: money(t.cost), sub: 'по закупочным ценам' },
-      { label: 'С наценкой ' + fmtPct(markup) + '%', value: money(t.sale), sub: 'потенциальная выручка' },
+      { label: 'Средняя цена', value: money(avg), sub: 'по закупочным ценам' },
+      { label: 'Средняя с наценкой ' + fmtPct(markup) + '%', value: money(avg * (1 + markup / 100)), sub: 'средняя цена продажи' },
     ]);
   }
 
@@ -1831,8 +1826,9 @@ function downloadXlsx(bytes, filename) {
     view.innerHTML =
       '<div class="tab-page">' +
       '<div class="page-head">' +
-      '<div class="page-title"><h2>Каталог</h2><p>Прайс-лист: наименование, артикул и цена. Из каталога позиции добавляются на склад.</p></div>' +
+      '<div class="page-title"><h2>Каталог</h2><p>Прайс-лист: наименование, артикул и цена. Можно загрузить из Excel.</p></div>' +
       '<div class="head-actions">' +
+      '<button class="btn" data-act="import-catalog" title="Импорт каталога из Excel или CSV">' + icon('upload') + '<span>Импорт</span></button>' +
       '<button class="btn" data-act="catalog-from-stock" title="Добавить в каталог позиции из номенклатуры">' + icon('box') + '<span>Из номенклатуры</span></button>' +
       '<button class="btn" data-act="export-catalog" title="Экспорт каталога в Excel">' + icon('download') + '<span>В Excel</span></button>' +
       '<button class="btn primary" data-act="add-catalog">' + icon('plus') + '<span>Добавить позицию</span></button>' +
@@ -1865,6 +1861,7 @@ function downloadXlsx(bytes, filename) {
       else if (act === 'del-catalog') removeCatalogItem(btn.dataset.id);
       else if (act === 'catalog-to-stock') openStockAddModal(btn.dataset.id);
       else if (act === 'catalog-from-stock') fillCatalogFromStock();
+      else if (act === 'import-catalog') openImportModal('catalog');
       else if (act === 'export-catalog') exportCatalog();
     });
 
@@ -1890,8 +1887,9 @@ function downloadXlsx(bytes, filename) {
           '<div class="empty-title">Ничего не найдено</div><div class="empty-text">Попробуйте изменить запрос.</div></div>'
         : '<div class="empty"><div class="empty-icon">' + icon('file', 28) + '</div>' +
           '<div class="empty-title">Каталог пуст</div>' +
-          '<div class="empty-text">Добавьте позиции вручную или перенесите текущую номенклатуру — наименования, артикулы и цены подставятся автоматически.</div>' +
+          '<div class="empty-text">Добавьте позиции вручную, загрузите прайс из Excel или перенесите текущую номенклатуру.</div>' +
           '<div class="head-actions"><button class="btn primary" data-act="add-catalog">' + icon('plus') + '<span>Добавить позицию</span></button>' +
+          '<button class="btn" data-act="import-catalog">Импорт из Excel</button>' +
           (state.items.length ? '<button class="btn" data-act="catalog-from-stock">Заполнить из номенклатуры</button>' : '') +
           '</div></div>';
     } else {
@@ -2655,10 +2653,10 @@ function downloadXlsx(bytes, filename) {
     const r1 = addRow([{ v: 'Номенклатурная база', s: S.title }], 26);
     const r2 = addRow([{ v: 'Сформировано: ' + nowRu() + ' · наценка ' + fmtPct(markup) + '%', s: S.subtitle }], 18);
     addRow([]);
-    addRow(['№', 'Наименование', 'Артикул', 'Ед.', 'Цена закупки', 'Количество', 'Сумма закупки', 'Цена с наценкой', 'Сумма с наценкой'].map(function (h) {
+    addRow(['№', 'Наименование', 'Артикул', 'Ед.', 'Цена закупки', 'Цена с наценкой'].map(function (h) {
       return { v: h, s: S.header };
     }), 30);
-    merges.push('A' + r1 + ':I' + r1, 'A' + r2 + ':I' + r2);
+    merges.push('A' + r1 + ':F' + r1, 'A' + r2 + ':F' + r2);
 
     state.items.forEach(function (it, i) {
       addRow([
@@ -2667,25 +2665,17 @@ function downloadXlsx(bytes, filename) {
         { v: it.sku, s: S.text },
         { v: it.unit, s: S.center },
         { v: round2(it.price), s: S.money },
-        { v: round3(it.qty), s: S.qty },
-        { v: round2(it.price * it.qty), s: S.money },
         { v: round2(it.price * (1 + markup / 100)), s: S.money },
-        { v: round2(it.price * (1 + markup / 100) * it.qty), s: S.money },
       ]);
     });
 
-    const t = totals(state.items);
     addRow([]);
-    addRow([
-      { v: 'Итого', s: S.totalLabel }, { v: '', s: S.totalLabel }, { v: '', s: S.totalLabel },
-      { v: '', s: S.totalLabel }, { v: '', s: S.totalLabel },
-      { v: t.qty, s: S.totalQty }, { v: t.cost, s: S.totalMoney }, { v: '', s: S.totalLabel }, { v: t.sale, s: S.totalMoney },
-    ], 22);
+    addRow([{ v: 'Всего позиций: ' + state.items.length, s: S.totalLabel }], 22);
 
     const bytes = XLSX.build({
       sheets: [{
         name: 'Номенклатура',
-        cols: [5, 44, 16, 8, 14, 12, 16, 16, 17],
+        cols: [5, 44, 16, 8, 14, 16],
         rows: rows,
         heights: heights,
         merges: merges,
@@ -3088,7 +3078,27 @@ function downloadXlsx(bytes, filename) {
     return rowsToItems(rows);
   }
 
-  function downloadTemplate() {
+  function downloadTemplate(isCatalog) {
+    if (isCatalog) {
+      const rows = [
+        ['Наименование', 'Артикул', 'Цена'].map(function (h) {
+          return { v: h, s: S.header };
+        }),
+        [{ v: 'Пример товара 1', s: S.text }, { v: 'ART-001', s: S.text }, { v: 1000, s: S.money }],
+        [{ v: 'Пример товара 2', s: S.text }, { v: 'ART-002', s: S.text }, { v: 250.5, s: S.money }],
+      ];
+      const bytes = XLSX.build({
+        sheets: [{
+          name: 'Каталог',
+          cols: [44, 16, 14],
+          rows: rows,
+          heights: [30],
+          freeze: 1,
+        }],
+      });
+      downloadXlsx(bytes, 'Шаблон_каталога.xlsx');
+      return;
+    }
     const rows = [
       ['Наименование', 'Артикул', 'Ед. изм.', 'Цена', 'Количество'].map(function (h) {
         return { v: h, s: S.header };
@@ -3109,12 +3119,38 @@ function downloadXlsx(bytes, filename) {
     toast('Шаблон скачан');
   }
 
-  function openImportModal() {
+  function mergeCatalog(parsed) {
+    const keyOf = function (c) {
+      const sku = String(c.sku || '').trim().toLowerCase();
+      if (sku) return 'sku:' + sku;
+      return 'name:' + String(c.name || '').trim().toLowerCase();
+    };
+    const byKey = new Map();
+    (state.catalog || []).forEach(function (c) { byKey.set(keyOf(c), c); });
+    parsed.forEach(function (c) {
+      const key = keyOf(c);
+      const existing = byKey.get(key);
+      if (existing) {
+        existing.name = c.name;
+        if (c.sku) existing.sku = c.sku;
+        existing.price = round2(c.price);
+      } else {
+        const item = { id: uid(), name: c.name, sku: c.sku, price: round2(c.price) };
+        state.catalog.push(item);
+        byKey.set(key, item);
+      }
+    });
+  }
+
+  function openImportModal(kind) {
+    const isCatalog = kind === 'catalog';
     showModal(
-      '<div class="modal-head"><h3>Импорт номенклатуры</h3>' +
+      '<div class="modal-head"><h3>' + (isCatalog ? 'Импорт каталога' : 'Импорт номенклатуры') + '</h3>' +
       '<button type="button" class="icon-btn" data-close>' + icon('x') + '</button></div>' +
-      '<p class="modal-sub">Excel (.xlsx) или CSV. Обязательная колонка — «Наименование»; ' +
-      'можно добавить «Артикул», «Ед. изм.», «Цена» и «Количество».</p>' +
+      '<p class="modal-sub">' + (isCatalog
+        ? 'Excel (.xlsx) или CSV. Обязательная колонка — «Наименование»; можно добавить «Артикул» и «Цену».'
+        : 'Excel (.xlsx) или CSV. Обязательная колонка — «Наименование»; можно добавить «Артикул», «Ед. изм.», «Цену» и «Количество».') +
+      '</p>' +
       '<div class="import-pick" id="drop-zone">' +
       '<button type="button" class="btn" id="pick-file">' + icon('upload') + '<span>Выбрать файл</span></button>' +
       '<span class="muted" id="file-label">или перетащите файл сюда</span>' +
@@ -3124,8 +3160,8 @@ function downloadXlsx(bytes, filename) {
       '<span class="muted"> — с готовыми колонками</span></div>' +
       '<div id="import-result"></div>' +
       '<div id="import-modes" hidden>' +
-      '<label class="check"><input type="radio" name="import-mode" value="append" checked><span>Добавить к текущей базе</span></label>' +
-      '<label class="check"><input type="radio" name="import-mode" value="replace"><span>Заменить номенклатуру</span></label>' +
+      '<label class="check"><input type="radio" name="import-mode" value="append" checked><span>' + (isCatalog ? 'Добавить к каталогу' : 'Добавить к текущей базе') + '</span></label>' +
+      '<label class="check"><input type="radio" name="import-mode" value="replace"><span>' + (isCatalog ? 'Заменить каталог' : 'Заменить номенклатуру') + '</span></label>' +
       '</div>' +
       '<div class="modal-actions">' +
       '<button type="button" class="btn" data-close>Отмена</button>' +
@@ -3158,7 +3194,8 @@ function downloadXlsx(bytes, filename) {
               parsed = items;
               result.innerHTML = '<div class="import-ok">' + icon('check', 15) + 'Найдено позиций: <b>' + items.length + '</b></div>' +
                 '<div class="import-list">' + items.slice(0, 5).map(function (it) {
-                  return '<div>' + esc(it.name) + ' <span class="muted">· ' + money(it.price) + ' × ' + fmtQty(it.qty) + ' ' + esc(it.unit) + '</span></div>';
+                  return '<div>' + esc(it.name) + ' <span class="muted">· ' + money(it.price) +
+                    (isCatalog ? '' : ' × ' + fmtQty(it.qty) + ' ' + esc(it.unit)) + '</span></div>';
                 }).join('') + (items.length > 5 ? '<div class="muted">…и ещё ' + (items.length - 5) + '</div>' : '') + '</div>';
               modes.hidden = false;
               importBtn.disabled = false;
@@ -3183,12 +3220,24 @@ function downloadXlsx(bytes, filename) {
             if (file) handleFile(file);
           });
 
-          modal.querySelector('#dl-template').addEventListener('click', downloadTemplate);
+          modal.querySelector('#dl-template').addEventListener('click', function () { downloadTemplate(isCatalog); });
 
           importBtn.addEventListener('click', function () {
             if (!parsed || !parsed.length) return;
             const modeInput = modal.querySelector('input[name="import-mode"]:checked');
             const mode = modeInput ? modeInput.value : 'append';
+            if (isCatalog) {
+              if (mode === 'replace' && !window.confirm('Заменить каталог? Текущие позиции каталога будут удалены. Номенклатура и счета не изменятся.')) {
+                return;
+              }
+              if (mode === 'replace') state.catalog = [];
+              mergeCatalog(parsed);
+              saveState();
+              close();
+              renderApp();
+              toast('Импортировано позиций каталога: ' + parsed.length);
+              return;
+            }
             if (mode === 'replace' && !window.confirm('Заменить номенклатуру? Текущие позиции будут удалены, история счетов сохранится.')) {
               return;
             }
@@ -3348,6 +3397,9 @@ function downloadXlsx(bytes, filename) {
       expiresAt: 0,
       lastSyncAt: 0,
       lastRemoteUpdatedAt: '',
+      lastRemoteMd5: '',
+      conflictPending: false,
+      localDirty: false,
       localUpdatedAt: '',
       deviceId: 'dev' + Math.random().toString(36).slice(2, 10),
       auto: true,
@@ -3375,8 +3427,10 @@ function downloadXlsx(bytes, filename) {
   }
 
   function cloudLocalChanged() {
-    if (!cloud || !cloud.localUpdatedAt) return false;
-    return new Date(cloud.localUpdatedAt).getTime() > (cloud.lastSyncAt || 0) + 1000;
+    if (!cloud) return false;
+    if (cloud.localDirty) return true;
+    if (!cloud.localUpdatedAt) return false;
+    return new Date(cloud.localUpdatedAt).getTime() > (cloud.lastSyncAt || 0);
   }
 
   function b64url(bytes) {
@@ -3615,6 +3669,7 @@ function downloadXlsx(bytes, filename) {
     ui.viewInvoice = null;
     cloud.localUpdatedAt = payload.updatedAt || new Date().toISOString();
     cloud.lastRemoteUpdatedAt = cloud.localUpdatedAt;
+    cloud.localDirty = false;
     saveCloud();
     saveState(true);
     renderApp();
@@ -3652,11 +3707,22 @@ function downloadXlsx(bytes, filename) {
     });
   }
 
+  async function cloudRememberUploaded() {
+    try {
+      const meta = await cloudMeta();
+      cloud.lastRemoteMd5 = meta && meta.md5 ? String(meta.md5) : '';
+    } catch (err) {
+      cloud.lastRemoteMd5 = '';
+    }
+  }
+
   async function cloudSync(reason) {
     if (!cloudConnected()) {
       if (reason === 'manual') toast('Сначала подключите Яндекс Диск', 'error');
       return;
     }
+    if (reason === 'manual') cloud.conflictPending = false;
+    if (reason === 'auto' && cloud.conflictPending) return;
     if (cloudBusy) return;
     cloudBusy = true;
     setSyncBusy(true);
@@ -3670,71 +3736,98 @@ function downloadXlsx(bytes, filename) {
       if (!meta) {
         const payload = cloudPayload();
         await cloudUpload(payload);
+        await cloudRememberUploaded();
         cloud.lastSyncAt = Date.now();
         cloud.lastRemoteUpdatedAt = payload.updatedAt;
+        cloud.conflictPending = false;
+        cloud.localDirty = false;
         saveCloud();
-        toast('База загружена на Яндекс Диск');
+        if (reason !== 'auto') toast('База загружена на Яндекс Диск');
+        return;
+      }
+
+      const remoteMd5 = String(meta.md5 || '');
+      const remoteChanged = remoteMd5 !== String(cloud.lastRemoteMd5 || '');
+      const localEmpty = !state.items.length && !state.catalog.length && !state.invoices.length;
+      const localChanged = cloudLocalChanged();
+
+      if (!remoteChanged && !localChanged) {
+        cloud.lastSyncAt = Date.now();
+        cloud.lastRemoteMd5 = remoteMd5;
+        cloud.localDirty = false;
+        saveCloud();
+        if (reason === 'manual') toast('Всё синхронизировано');
+        return;
+      }
+
+      if (!remoteChanged && localChanged) {
+        const payload = cloudPayload();
+        await cloudUpload(payload);
+        await cloudRememberUploaded();
+        cloud.lastSyncAt = Date.now();
+        cloud.lastRemoteUpdatedAt = payload.updatedAt;
+        cloud.conflictPending = false;
+        cloud.localDirty = false;
+        saveCloud();
+        if (reason !== 'auto') toast('Изменения загружены на Яндекс Диск');
         return;
       }
 
       const remote = await cloudDownload();
       const remoteUpdated = String(remote.updatedAt || '');
-      const localEmpty = !state.items.length && !state.catalog.length && !state.invoices.length;
-      const remoteChanged = remoteUpdated !== String(cloud.lastRemoteUpdatedAt || '');
-      const localChanged = cloudLocalChanged();
 
       if (!cloud.lastSyncAt && localEmpty) {
         applyCloudPayload(remote);
         cloud.lastSyncAt = Date.now();
         cloud.lastRemoteUpdatedAt = remoteUpdated;
+        cloud.lastRemoteMd5 = remoteMd5;
+        cloud.conflictPending = false;
+        cloud.localDirty = false;
         saveCloud();
         toast('База загружена с Яндекс Диска');
         return;
       }
-      if (remoteChanged && localChanged) {
+
+      if (localChanged) {
         const choice = await cloudConflict(remote);
         if (choice === 'pull') {
           applyCloudPayload(remote);
           cloud.lastSyncAt = Date.now();
           cloud.lastRemoteUpdatedAt = remoteUpdated;
+          cloud.lastRemoteMd5 = remoteMd5;
+          cloud.conflictPending = false;
+          cloud.localDirty = false;
           saveCloud();
           toast('Загружена версия с Яндекс Диска');
         } else if (choice === 'push') {
           const payload = cloudPayload();
           await cloudUpload(payload);
+          await cloudRememberUploaded();
           cloud.lastSyncAt = Date.now();
           cloud.lastRemoteUpdatedAt = payload.updatedAt;
+          cloud.conflictPending = false;
+          cloud.localDirty = false;
           saveCloud();
           toast('Версия с этого устройства загружена на Диск');
+        } else {
+          cloud.conflictPending = true;
+          saveCloud();
         }
         return;
       }
-      if (remoteChanged) {
-        applyCloudPayload(remote);
-        cloud.lastSyncAt = Date.now();
-        cloud.lastRemoteUpdatedAt = remoteUpdated;
-        saveCloud();
-        toast('Получены изменения с Яндекс Диска');
-        return;
-      }
-      if (localChanged) {
-        const payload = cloudPayload();
-        await cloudUpload(payload);
-        cloud.lastSyncAt = Date.now();
-        cloud.lastRemoteUpdatedAt = payload.updatedAt;
-        saveCloud();
-        toast('Изменения загружены на Яндекс Диск');
-        return;
-      }
 
+      applyCloudPayload(remote);
       cloud.lastSyncAt = Date.now();
       cloud.lastRemoteUpdatedAt = remoteUpdated;
+      cloud.lastRemoteMd5 = remoteMd5;
+      cloud.conflictPending = false;
+      cloud.localDirty = false;
       saveCloud();
-      if (reason === 'manual') toast('Всё синхронизировано');
+      toast('Получены изменения с Яндекс Диска');
     } catch (err) {
       cloud.lastError = err && err.message ? err.message : String(err);
       saveCloud();
-      toast('Ошибка синхронизации: ' + cloud.lastError, 'error');
+      if (reason === 'manual') toast('Ошибка синхронизации: ' + cloud.lastError, 'error');
     } finally {
       cloudBusy = false;
       setSyncBusy(false);
@@ -3799,6 +3892,24 @@ function downloadXlsx(bytes, filename) {
     cloudSync('auto');
   }
 
+  function cloudPoll() {
+    if (!appReady || document.visibilityState !== 'visible') return;
+    if (!cloudConnected() || !cloud.auto || cloudBusy || cloud.conflictPending) return;
+    if (Date.now() - lastPollAt < 10000) return;
+    lastPollAt = Date.now();
+    cloudSync('auto');
+  }
+
+  function scheduleAutoSync() {
+    if (!appReady || !cloudConnected() || !cloud.auto || cloudBusy || cloud.conflictPending) return;
+    if (!cloud.lastSyncAt) return;
+    if (autoSyncTimer) clearTimeout(autoSyncTimer);
+    autoSyncTimer = setTimeout(function () {
+      autoSyncTimer = 0;
+      if (!cloudBusy) cloudSync('auto');
+    }, 2500);
+  }
+
   function setSyncBusy(on) {
     const btn = $('#btn-sync');
     if (btn) btn.classList.toggle('syncing', !!on);
@@ -3821,7 +3932,7 @@ function downloadXlsx(bytes, filename) {
       '<div class="modal-head"><h3>Облако — Яндекс Диск</h3>' +
       '<button type="button" class="icon-btn" data-close>' + icon('x') + '</button></div>' +
       '<p class="modal-sub">База хранится в файле <b>' + CLOUD_FILE + '</b> в папке приложения на Диске. ' +
-      'Проверка и обмен — раз в 24 часа при открытии страницы и по кнопке.</p>' +
+      'Проверка и обмен — при открытии, каждые 15 секунд и по кнопке.</p>' +
       (isFile
         ? '<div class="import-error">' + icon('alert', 15) + '<div>Облако работает только на HTTPS-адресе. ' +
           'Разместите файл на хостинге (Netlify, GitHub Pages) и откройте по ссылке — тогда синхронизация заработает и на телефоне.</div></div>'
@@ -3833,7 +3944,7 @@ function downloadXlsx(bytes, filename) {
           '<button type="button" class="btn danger-ghost" id="cloud-disconnect">Отключить</button>' +
           '</div>' +
           '<label class="check" style="margin-top:14px"><input type="checkbox" id="cloud-auto"' + (cloud.auto ? ' checked' : '') + '>' +
-          '<span>Синхронизировать автоматически раз в 24 часа</span></label>' +
+          '<span>Синхронизировать автоматически (каждые 15 секунд)</span></label>' +
           '<div class="hint" id="cloud-last">' + cloudLastText() + '</div>' +
           '<div class="hint" style="margin-top:10px">Токен хранится в этом браузере. На чужом устройстве отключайте облако.</div>'
         : '<label class="field"><span>ClientID приложения Яндекс OAuth</span>' +
@@ -4035,13 +4146,18 @@ function downloadXlsx(bytes, filename) {
 
     renderApp();
     updateCloudBadge();
+    appReady = true;
     cloudHandleCallback().then(function (handled) {
       if (handled) renderApp();
     });
     setTimeout(cloudAutoCheck, 2500);
     setInterval(cloudAutoCheck, 30 * 60 * 1000);
+    setInterval(cloudPoll, CLOUD_POLL_INTERVAL);
     document.addEventListener('visibilitychange', function () {
-      if (!document.hidden) cloudAutoCheck();
+      if (!document.hidden) {
+        cloudAutoCheck();
+        cloudPoll();
+      }
     });
   }
 
