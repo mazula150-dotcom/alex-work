@@ -3560,16 +3560,30 @@ function downloadXlsx(bytes, filename) {
 
   async function cloudDownload() {
     const res = await cloudFetch('/resources/download?path=' + encodeURIComponent(CLOUD_FILE));
-    if (!res.ok) throw new Error(await cloudErrorText(res));
+    if (!res.ok) throw new Error('Не удалось получить файл с Диска: ' + (await cloudErrorText(res)));
     const data = await res.json();
     const file = await fetch(data.href);
     if (!file.ok) throw new Error('Не удалось скачать файл с Диска');
     return file.json();
   }
 
+  async function cloudEnsureFolder() {
+    const folderPath = encodeURIComponent('app:/');
+    const info = await cloudFetch('/resources?path=' + folderPath);
+    if (info.ok) return;
+    if (info.status === 404) {
+      const created = await cloudFetch('/resources?path=' + folderPath, { method: 'PUT' });
+      if (created.ok || created.status === 409) return;
+      throw new Error('Не удалось создать папку приложения на Диске. В OAuth-приложении включите доступ «К папке приложения на Яндекс Диске» (cloud_api:disk.app_folder) и переподключите Диск.');
+    }
+    if (info.status === 401) throw new Error('Сессия истекла. Отключите и подключите Диск заново.');
+    throw new Error('Папка приложения на Диске недоступна: ' + (await cloudErrorText(info)) + '. Проверьте доступ «К папке приложения на Яндекс Диске» и переподключите Диск.');
+  }
+
   async function cloudUpload(payload) {
+    await cloudEnsureFolder();
     const res = await cloudFetch('/resources/upload?path=' + encodeURIComponent(CLOUD_FILE) + '&overwrite=true');
-    if (!res.ok) throw new Error(await cloudErrorText(res));
+    if (!res.ok) throw new Error('Не удалось получить ссылку для загрузки: ' + (await cloudErrorText(res)));
     const data = await res.json();
     const put = await fetch(data.href, {
       method: 'PUT',
